@@ -17,6 +17,7 @@ except Exception:
         InputImpl = None
 
 ASPECT_RATIOS = [
+    "Original",
     "1:1 (Square)",
     "2:3 (Portrait Photo)",
     "3:2 (Photo)",
@@ -33,8 +34,12 @@ class LoadImageCrop:
     - a visual, mouse-draggable crop area (aspect-ratio locked) in the frontend preview
     - a paste-from-clipboard entry in the node context menu
 
-    The crop rectangle (crop_x, crop_y, crop_w, crop_h) arrives as normalized [0..1]
-    fractions of the source image size, computed by the frontend.
+    With aspect_ratio == "Original" (default) the image is returned as-is,
+    uncropped.
+
+    Otherwise the crop rectangle (crop_x, crop_y, crop_w, crop_h) arrives as
+    normalized [0..1] fractions of the source image size, computed by the
+    frontend.
     """
 
     CATEGORY = "image"
@@ -62,6 +67,14 @@ class LoadImageCrop:
         }
 
     def load_image(self, image, aspect_ratio, crop_x, crop_y, crop_w, crop_h):
+        output_image, output_mask = self._load(image)
+        if aspect_ratio == "Original":
+            # the image is returned as-is, regardless of the crop values
+            return (output_image, output_mask)
+        return self._crop(output_image, output_mask, crop_x, crop_y, crop_w, crop_h)
+
+    def _load(self, image):
+        """Load the image (and its alpha mask) as tensors, without any crop."""
         image_path = folder_paths.get_annotated_filepath(image)
 
         dtype = comfy.model_management.intermediate_dtype()
@@ -75,7 +88,7 @@ class LoadImageCrop:
                     output_mask = (1.0 - components.alpha[..., -1]).to(device=device, dtype=dtype)
                 else:
                     output_mask = torch.zeros((output_image.shape[0], 64, 64), dtype=dtype, device=device)
-                return self._crop(output_image, output_mask, crop_x, crop_y, crop_w, crop_h)
+                return (output_image, output_mask)
 
         # Fallback (also used when InputImpl is unavailable): plain image loading,
         # the same path the official node uses for animated webp.
@@ -97,12 +110,16 @@ class LoadImageCrop:
             else:
                 mask = torch.zeros((64, 64), dtype=torch.float32)
             output_masks.append(mask.unsqueeze(0).to(dtype=dtype))
+        if len(output_images) == 0:
+            raise RuntimeError("no usable frames in image: {}".format(image))
         output_image = torch.cat(output_images, dim=0).to(device=device, dtype=dtype)
         output_mask = torch.cat(output_masks, dim=0).to(device=device, dtype=dtype)
-
-        return self._crop(output_image, output_mask, crop_x, crop_y, crop_w, crop_h)
+        return (output_image, output_mask)
 
     def _crop(self, output_image, output_mask, crop_x, crop_y, crop_w, crop_h):
+        # full-frame crop ("Original" mode): return as-is
+        if (crop_x, crop_y, crop_w, crop_h) == (0, 0, 1, 1):
+            return (output_image, output_mask)
         # guard against degenerate values (API/workflow input): an empty or
         # out-of-range crop is returned uncropped
         if not (crop_w > 0.001 and crop_h > 0.001 and crop_x < 0.999 and crop_y < 0.999):

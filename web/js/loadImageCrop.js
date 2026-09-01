@@ -23,6 +23,9 @@
  *        canvas pan/zoom is preempted only while the cursor is on the preview.
  *  - The crop is stored as normalized floats in the (hidden) crop_x/y/w/h
  *    widgets so it serializes into the workflow and is usable via API.
+ *  - "Original" aspect ratio (default): no crop area is drawn, drag/zoom are
+ *    disabled and the (hidden) crop widgets hold the full frame, so the image
+ *    passes through uncropped.
  */
 const LIRC = {
   NODE_NAME: "LoadImageCrop",
@@ -59,6 +62,8 @@ function getState(node) {
 function ratioOf(node) {
   const w = widgetOf(node, "aspect_ratio");
   const v = w ? String(w.value) : "1:1";
+  // "Original" (or no ratio match) -> no crop at all
+  if (/^\s*original\b/i.test(v)) return null;
   // values look like "3:2 (Photo)" -> take the leading "W:H"
   const m = v.match(/(\d+(?:\.\d+)?)\s*:\s*(\d+(?:\.\d+)?)/);
   if (m) {
@@ -89,6 +94,12 @@ function maxFitRatio(ratio, imgW, imgH) {
 
 function resetCrop(node) {
   const st = getState(node);
+  if (ratioOf(node) == null) {
+    // "Original": no crop
+    st.crop = null;
+    st.cropFromWorkflow = false;
+    return;
+  }
   const n = naturalSize(node);
   if (!n) return;
   const fr = maxFitRatio(ratioOf(node), n.w, n.h);
@@ -113,6 +124,12 @@ function fitCrop(node, c) {
 
 function initCropFromWidgets(node) {
   const st = getState(node);
+  if (ratioOf(node) == null) {
+    // "Original": ignore any saved crop, always full frame
+    st.crop = null;
+    writeCrop(node);
+    return;
+  }
   if (st.crop) return;
   const g = (k) => {
     const w = widgetOf(node, k);
@@ -134,11 +151,13 @@ function initCropFromWidgets(node) {
 
 function writeCrop(node) {
   const st = getState(node);
-  if (!st.crop) return;
+  const c = st.crop || { x: 0, y: 0, w: 1, h: 1 };
+  // "Original" -> write the full frame so a run without frontend interaction
+  // returns the image as-is
   const map = { crop_x: "x", crop_y: "y", crop_w: "w", crop_h: "h" };
   for (const [key, prop] of Object.entries(map)) {
     const w = widgetOf(node, key);
-    if (w) w.value = st.crop[prop];
+    if (w) w.value = c[prop];
   }
 }
 
@@ -244,7 +263,7 @@ function scheduleOverlay(node, ctx, widget, width, imgsArg) {
       // interaction crops exactly what the overlay shows
       writeCrop(node);
     } else {
-      fitCrop(node, st.crop);
+      if (st.crop) fitCrop(node, st.crop);
       writeCrop(node);
     }
     st.cropFromWorkflow = false;
@@ -316,8 +335,10 @@ function endCropDrag(node) {
   if (s.dragging) {
     s.dragging = false;
     s.dragOff = null;
-    fitCrop(node, s.crop);
-    writeCrop(node);
+    if (s.crop) {
+      fitCrop(node, s.crop);
+      writeCrop(node);
+    }
     markDirty(node);
   }
   try {
@@ -434,11 +455,15 @@ function initNode(node) {
         const prev = ar.callback;
         ar.callback = (v) => {
           const n = naturalSize(node);
-          if (n) {
-            const fr = maxFitRatio(ratioOf(node), n.w, n.h);
+          const r = ratioOf(node);
+          if (r == null) {
+            // "Original": drop the crop area entirely
+            st.crop = null;
+          } else if (n) {
+            const fr = maxFitRatio(r, n.w, n.h);
             st.crop = { x: (1 - fr.w) / 2, y: (1 - fr.h) / 2, w: fr.w, h: fr.h };
-            st.cropFromWorkflow = false;
           }
+          st.cropFromWorkflow = false;
           writeCrop(node);
           if (typeof prev === "function") prev(v);
           markDirty(node);
@@ -471,7 +496,7 @@ function initNode(node) {
           writeCrop(node);
           markDirty(node);
         } else if (s.rect) {
-          const inside = pointInRect(pos, s.rect);
+          const inside = !!s.crop && pointInRect(pos, s.rect);
           try {
             const c = lircApp && lircApp.canvas && lircApp.canvas.canvas;
             if (c) c.style.cursor = inside ? "move" : "";
@@ -527,6 +552,10 @@ function installWheelInterceptor(app) {
           if (n.type !== LIRC.NODE_NAME || !n.__lirc) continue;
           const st = n.__lirc;
           const local = [pos[0] - n.pos[0], pos[1] - n.pos[1]];
+          if (st.rect && pointInRect(local, st.rect) && !st.crop) {
+            // "Original": no crop to zoom, keep the core canvas behavior
+            return;
+          }
           if (st.rect && pointInRect(local, st.rect) && st.crop) {
             // always consume the wheel over the preview (no canvas zoom/pan)
             e.preventDefault();
