@@ -1,0 +1,16 @@
+[project]
+name = "ComfyUI-LoadImageCrop"
+description = "An extended Load Image node with an aspect-ratio-locked, WYSIWYG crop rectangle that outputs the cropped IMAGE and MASK."
+version = "1.0.2"
+license = "MIT"
+
+[project.urls]
+Repository = "https://github.com/domg73/ComfyUI-LoadImageCrop"
+Documentation = "https://github.com/domg73/ComfyUI-LoadImageCrop#readme"
+"Bug Tracker" = "https://github.com/domg73/ComfyUI-LoadImageCrop/issues"
+
+[tool.comfy]
+PublisherId = "@domg73"
+DisplayName = "Load Image + Crop"
+Icon = "✂️"
+includes = []

@@ -26,6 +26,14 @@
  *  - "Original" aspect ratio (default): no crop area is drawn, drag/zoom are
  *    disabled and the (hidden) crop widgets hold the full frame, so the image
  *    passes through uncropped.
+ *  - 2.0 / Vue nodes mode (LiteGraph.vueNodesMode): the canvas preview
+ *    widget does not exist there - the image is a DOM <img> (object-contain)
+ *    inside the node's [data-node-id] element. The overlay is a positioned
+ *    div on top of that image and pointer/wheel events are handled directly
+ *    on the DOM element (the node's DOM is pointer-events-none, so without
+ *    this the canvas pan/zoom would swallow the interaction). The same
+ *    normalized crop state and the same crop_* widgets are used, so the
+ *    behavior is identical in both modes.
  */
 const LIRC = {
   NODE_NAME: "LoadImageCrop",
@@ -443,10 +451,14 @@ function initNode(node) {
     }
     if (!st.inited) {
       st.inited = true;
-      // hide the crop_* fields on the node (they still serialize)
+      // hide the crop_* fields on the node (they still serialize); the 2.0
+      // renderer filters on options.hidden, classic litegraph on hidden
       for (const key of LIRC.CROP_KEYS) {
         const w = widgetOf(node, key);
-        if (w) w.hidden = true;
+        if (!w) continue;
+        w.hidden = true;
+        if (!w.options || typeof w.options !== "object") w.options = {};
+        w.options.hidden = true;
       }
       // keep the aspect_ratio widget's change in sync with the crop
       const ar = widgetOf(node, "aspect_ratio");
@@ -466,6 +478,7 @@ function initNode(node) {
           st.cropFromWorkflow = false;
           writeCrop(node);
           if (typeof prev === "function") prev(v);
+          if (isVueMode()) layoutVueOverlay(node);
           markDirty(node);
         };
       }
@@ -512,14 +525,17 @@ function initNode(node) {
         try { wrapPreviewWidget(node); } catch (_) { /* ignore */ }
         if (typeof prevDrawFg === "function") prevDrawFg.call(node, ctx, canvas, canvasEl);
       };
-      // context menu: paste from clipboard
+      // context menu: the 2.0 menu already contains the core "Paste Image"
+      // entry, so ours is added only in classic mode; both entries drive
+      // the native node.pasteFile / node.pasteFiles methods
       node.getExtraMenuOptions = (canvas, options) => {
-        const items = [
-          {
-            content: "Paste image from clipboard",
+        const items = [];
+        if (!isVueMode()) {
+          items.push({
+            content: "Paste Image from Clipboard",
             callback: () => pasteFromClipboard(node)
-          }
-        ];
+          });
+        }
         return items.concat(options || []);
       };
       initCropFromWidgets(node);
@@ -528,6 +544,249 @@ function initNode(node) {
   } catch (e) {
     console.warn(LIRC.TAG, "initNode", e);
   }
+}
+
+/* --------------------- 2.0 / Vue nodes mode (DOM) -------------------- */
+
+function isVueMode() {
+  try {
+    return typeof LiteGraph !== "undefined" && LiteGraph.vueNodesMode === true;
+  } catch (_) {
+    return false;
+  }
+}
+
+/** Locate the 2.0 preview DOM: panel + <img> inside the node element. */
+function vuePartsOf(node) {
+  const root = document.querySelector(`[data-node-id="${node.id}"]`);
+  if (!root) return null;
+  const img = root.querySelector('div[class*="image-preview"] img');
+  if (!img) return null;
+  const panel =
+    img.closest('div[class*="group/panel"]') || img.parentElement;
+  return { img, panel };
+}
+
+function removeVueOverlay(node) {
+  const st = node.__lirc;
+  if (st && st.vue && st.vue.ov && st.vue.ov.parentElement) {
+    st.vue.ov.parentElement.removeChild(st.vue.ov);
+  }
+  if (st && st.vue && st.vue.ro) {
+    try { st.vue.ro.disconnect(); } catch (_) { /* ignore */ }
+  }
+  if (st) st.vue = null;
+}
+
+/**
+ * Re-sync the DOM overlay: (re)create it when the panel or the <img> changed
+ * under us (Vue re-renders replace DOM elements), re-init the crop on image
+ * or ratio change, and position the crop box over the object-contain area.
+ */
+function layoutVueOverlay(node) {
+  const st = getState(node);
+  const parts = vuePartsOf(node);
+  if (!parts || !parts.img.complete || !parts.img.naturalWidth) return;
+
+  const vw = parts.img.naturalWidth;
+  const vh = parts.img.naturalHeight;
+  const key = `${parts.img.src}|${ratioOf(node)}|${vw}x${vh}`;
+  if (st.lastKey !== key) {
+    st.lastKey = key;
+    const r = ratioOf(node);
+    if (r == null) {
+      st.crop = null;
+    } else if (!st.cropFromWorkflow) {
+      const fr = maxFitRatio(r, vw, vh);
+      st.crop = { x: (1 - fr.w) / 2, y: (1 - fr.h) / 2, w: fr.w, h: fr.h };
+    } else if (st.crop) {
+      // same clamp as the classic path (fitCrop): keep the saved size and
+      // position, clamped to the image bounds
+      const k = r * (vh / vw);
+      const fr = maxFitRatio(r, vw, vh);
+      const h = Math.min(Math.max(st.crop.h, 0.02), fr.h);
+      const w = h * k;
+      st.crop = {
+        x: Math.min(Math.max(0, st.crop.x), Math.max(0, 1 - w)),
+        y: Math.min(Math.max(0, st.crop.y), Math.max(0, 1 - h)),
+        w,
+        h,
+      };
+    }
+    st.cropFromWorkflow = false;
+    writeCrop(node);
+  }
+
+  const same =
+    st.vue && st.vue.panel === parts.panel && st.vue.img === parts.img;
+  if (!same) buildVueOverlay(node, parts);
+  if (!st.vue) return;
+
+  const ov = st.vue.ov;
+  const box = st.vue.box;
+  const label = st.vue.label;
+  const c = st.crop;
+  if (!c) {
+    ov.style.display = "none";
+    return;
+  }
+  ov.style.display = "";
+  // displayed image area inside the panel (object-contain)
+  const pw = parts.panel.clientWidth || 1;
+  const ph = parts.panel.clientHeight || 1;
+  const s = Math.min(pw / vw, ph / vh);
+  const dw = vw * s;
+  const dh = vh * s;
+  const ox = (pw - dw) / 2;
+  const oy = (ph - dh) / 2;
+  const l = ((ox + c.x * dw) / pw) * 100;
+  const t = ((oy + c.y * dh) / ph) * 100;
+  const ww = (c.w * dw) / pw * 100;
+  const hh = (c.h * dh) / ph * 100;
+  box.style.left = l + "%";
+  box.style.top = t + "%";
+  box.style.width = ww + "%";
+  box.style.height = hh + "%";
+  const ow = Math.round(c.w * vw);
+  const oh = Math.round(c.h * vh);
+  label.textContent = `${ow} × ${oh}`;
+  // room for the label inside the box?
+  label.style.display = box.offsetHeight > 18 ? "" : "none";
+}
+
+function buildVueOverlay(node, parts) {
+  const st = getState(node);
+  if (st.vue) removeVueOverlay(node);
+
+  const ov = document.createElement("div");
+  ov.dataset.lircOverlay = "1";
+  ov.style.cssText =
+    "position:absolute;inset:0;z-index:1;touch-action:none;cursor:default;";
+  const box = document.createElement("div");
+  box.style.cssText =
+    "position:absolute;box-sizing:border-box;border:2px solid #ff4040;box-shadow:0 0 0 4000px rgba(0,0,0,0.55);";
+  const label = document.createElement("div");
+  label.style.cssText =
+    "position:absolute;left:4px;top:2px;font:11px monospace;color:#fff;background:rgba(0,0,0,0.8);padding:0 4px;white-space:nowrap;";
+  box.appendChild(label);
+  ov.appendChild(box);
+  parts.panel.appendChild(ov);
+
+  const imgPos = (e) => {
+    const r = parts.img.getBoundingClientRect();
+    return {
+      nx: (e.clientX - r.left) / (r.width || 1),
+      ny: (e.clientY - r.top) / (r.height || 1)
+    };
+  };
+  const insideCrop = (nx, ny, c) =>
+    !!c && nx >= c.x && nx <= c.x + c.w && ny >= c.y && ny <= c.y + c.h;
+
+  let drag = null;
+  ov.addEventListener("pointerdown", (e) => {
+    const s = getState(node);
+    const { nx, ny } = imgPos(e);
+    if (!s.crop || !insideCrop(nx, ny, s.crop)) return;
+    // consume only inside the crop box: outside, let the event reach the
+    // panel (2.0 opens the mask editor on preview click)
+    e.preventDefault();
+    e.stopPropagation();
+    drag = { nx, ny, cx: s.crop.x, cy: s.crop.y };
+    s.dragging = true;
+    try { ov.setPointerCapture(e.pointerId); } catch (_) { /* ignore */ }
+    ov.style.cursor = "move";
+  });
+  ov.addEventListener("pointermove", (e) => {
+    const s = getState(node);
+    const { nx, ny } = imgPos(e);
+    if (drag && s.crop) {
+      s.crop.x = nx - drag.nx + drag.cx;
+      s.crop.y = ny - drag.ny + drag.cy;
+      fitCrop(node, s.crop);
+      writeCrop(node);
+      layoutVueOverlay(node);
+    } else {
+      ov.style.cursor = insideCrop(nx, ny, s.crop) ? "move" : "default";
+    }
+  });
+  const endDrag = (e) => {
+    if (!drag) return;
+    drag = null;
+    const s = getState(node);
+    s.dragging = false;
+    if (s.crop) {
+      fitCrop(node, s.crop);
+      writeCrop(node);
+    }
+    try { ov.releasePointerCapture(e.pointerId); } catch (_) { /* ignore */ }
+    ov.style.cursor = "default";
+  };
+  ov.addEventListener("pointerup", endDrag);
+  ov.addEventListener("pointercancel", endDrag);
+  ov.addEventListener("wheel", (e) => {
+    const s = getState(node);
+    if (!s.crop) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const n = { w: parts.img.naturalWidth, h: parts.img.naturalHeight };
+    const r = ratioOf(node);
+    const fr = maxFitRatio(r, n.w, n.h);
+    const c = s.crop;
+    const factor = e.deltaY < 0 ? 1.08 : 1 / 1.08;
+    let newH = c.h * factor;
+    if (newH > fr.h) newH = fr.h;
+    if (newH < 0.02) newH = 0.02;
+    if (Math.abs(newH - c.h) <= 1e-6) return;
+    const k = r * (n.h / n.w);
+    const newW = newH * k;
+    const { nx, ny } = imgPos(e);
+    const cx = nx - c.x;
+    const cy = ny - c.y;
+    c.x = c.x + (c.w - newW) * cx;
+    c.y = c.y + (c.h - newH) * cy;
+    c.w = newW;
+    c.h = newH;
+    fitCrop(node, c);
+    writeCrop(node);
+    layoutVueOverlay(node);
+  }, { passive: false });
+
+  let ro = null;
+  try {
+    ro = new ResizeObserver(() => layoutVueOverlay(node));
+    ro.observe(parts.panel);
+  } catch (_) { /* ResizeObserver optional */ }
+
+  st.vue = { ov, box, label, panel: parts.panel, img: parts.img, ro };
+  layoutVueOverlay(node);
+}
+
+/**
+ * 2.0 has no canvas redraw we can hook into, so a light timer keeps the
+ * overlays in sync with the DOM (image load, ratio change, Vue re-render).
+ */
+let vuePollerStarted = false;
+
+function startVuePoller(app) {
+  if (vuePollerStarted) return;
+  vuePollerStarted = true;
+  setInterval(() => {
+    try {
+      if (!app || !app.graph) return;
+      const vue = isVueMode();
+      for (const n of app.graph.nodes || []) {
+        if (!n || n.type !== LIRC.NODE_NAME || !n.__lirc || !n.__lirc.inited)
+          continue;
+        if (vue) {
+          layoutVueOverlay(n);
+        } else if (n.__lirc.vue) {
+          // the 2.0 setting was switched off at runtime: drop the DOM
+          // overlay so the classic canvas path takes over again
+          removeVueOverlay(n);
+        }
+      }
+    } catch (_) { /* ignore */ }
+  }, 250);
 }
 
 /* --------------------------- wheel zoom ------------------------------- */
@@ -551,6 +810,49 @@ function installWheelInterceptor(app) {
         for (const n of nodes) {
           if (n.type !== LIRC.NODE_NAME || !n.__lirc) continue;
           const st = n.__lirc;
+          // 2.0: the wheel may never reach the DOM overlay (the Vue layer
+          // forwards it to the canvas), so the zoom is handled here, at
+          // document capture time, before anything else sees the event.
+          if (isVueMode()) {
+            if (!st.vue || !st.vue.ov) continue;
+            const boxEl = st.vue.box;
+            const imgEl = st.vue.img;
+            if (!boxEl || !imgEl) continue;
+            const br = boxEl.getBoundingClientRect();
+            const overBox =
+              e.clientX >= br.left &&
+              e.clientX <= br.right &&
+              e.clientY >= br.top &&
+              e.clientY <= br.bottom;
+            if (!overBox) continue; // outside the crop: normal canvas behavior
+            if (st.crop) {
+              e.preventDefault();
+              e.stopPropagation();
+              const ir = imgEl.getBoundingClientRect();
+              const nat = { w: imgEl.naturalWidth, h: imgEl.naturalHeight };
+              const r = ratioOf(n);
+              const fr = maxFitRatio(r, nat.w, nat.h);
+              const c = st.crop;
+              const factor = e.deltaY < 0 ? 1.08 : 1 / 1.08;
+              let newH = c.h * factor;
+              if (newH > fr.h) newH = fr.h;
+              if (newH < 0.02) newH = 0.02;
+              if (Math.abs(newH - c.h) > 1e-6) {
+                const k = r * (nat.h / nat.w);
+                const newW = newH * k;
+                const nx = (e.clientX - ir.left) / (ir.width || 1);
+                const ny = (e.clientY - ir.top) / (ir.height || 1);
+                c.x = c.x + (c.w - newW) * (nx - c.x);
+                c.y = c.y + (c.h - newH) * (ny - c.y);
+                c.w = newW;
+                c.h = newH;
+                fitCrop(n, c);
+                writeCrop(n);
+                layoutVueOverlay(n);
+              }
+            }
+            return;
+          }
           const local = [pos[0] - n.pos[0], pos[1] - n.pos[1]];
           if (st.rect && pointInRect(local, st.rect) && !st.crop) {
             // "Original": no crop to zoom, keep the core canvas behavior
@@ -599,6 +901,15 @@ function installWheelInterceptor(app) {
 
 /* --------------------------- paste ------------------------------------ */
 
+/**
+ * Context-menu paste for classic nodes: the frontend already handles
+ * Ctrl+V natively in both designs, but classic exposes no menu entry for
+ * it. This mirrors the core "Paste Image" entry: read the clipboard and
+ * hand the image to the node's native paste methods (node.pasteFile /
+ * node.pasteFiles), the same path the core uses. Like the core entry it
+ * only covers clipboard images (screenshots); OS file copies work via
+ * Ctrl+V.
+ */
 async function pasteFromClipboard(node) {
   if (!navigator.clipboard || !navigator.clipboard.read) {
     alert("Clipboard access is not available in this browser. Use Chrome/Edge over http://localhost and allow clipboard access.");
@@ -606,36 +917,18 @@ async function pasteFromClipboard(node) {
   }
   try {
     const items = await navigator.clipboard.read();
-    let blob = null;
     for (const item of items) {
       const type = item.types.find((t) => t.startsWith("image/"));
       if (type) {
-        blob = await item.getType(type);
-        break;
+        const blob = await item.getType(type);
+        const ext = (type.split("/")[1] || "png").split(";")[0];
+        const file = new File([blob], `pasted-image.${ext}`, { type });
+        if (typeof node.pasteFile === "function") node.pasteFile(file);
+        if (typeof node.pasteFiles === "function") node.pasteFiles([file]);
+        return;
       }
     }
-    if (!blob) {
-      alert("No image found in the clipboard.");
-      return;
-    }
-    const fname = `paste_${Date.now()}.png`;
-    const fd = new FormData();
-    fd.append("image", blob, fname);
-    fd.append("overwrite", "true");
-    const res = await fetch("/upload/image", { method: "POST", body: fd });
-    if (!res.ok) throw new Error(`upload failed: ${res.status}`);
-    const data = await res.json();
-    const filename = data.name;
-    const w = widgetOf(node, "image");
-    if (w) {
-      if (!w.options) w.options = { values: [] };
-      if (!Array.isArray(w.options.values)) w.options.values = [];
-      if (!w.options.values.includes(filename)) w.options.values.push(filename);
-      const old = w.value;
-      w.value = filename;
-      w.callback?.(filename);
-      try { node.onWidgetChanged?.("image", filename, old, w); } catch (_) { /* ignore */ }
-    }
+    alert("No image found in the clipboard.");
   } catch (e) {
     console.error(LIRC.TAG, "paste failed", e);
     alert("Paste from clipboard failed: " + (e && e.message ? e.message : e));
@@ -668,6 +961,7 @@ function register(app) {
     }
   });
   installWheelInterceptor(app);
+  startVuePoller(app);
   console.log(LIRC.TAG, "extension registered");
 }
 
