@@ -10,7 +10,7 @@ Documentation = "https://github.com/domg73/ComfyUI-LoadImageCrop#readme"
 "Bug Tracker" = "https://github.com/domg73/ComfyUI-LoadImageCrop/issues"
 
 [tool.comfy]
-PublisherId = "@domg73"
+PublisherId = "domg73"
 DisplayName = "Load Image + Crop"
 Icon = "✂️"
 includes = []
