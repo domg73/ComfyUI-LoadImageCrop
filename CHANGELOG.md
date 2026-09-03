@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.0.3 (2026-09-03)
+
+- Classic nodes: the crop drag now starts only when the pointer is inside the crop box (the "move" cursor follows the same area); clicks and drags elsewhere keep the core node behavior, matching the official Load Image passthrough.
+
 ## v1.0.2 (2026-09-02)
 
 - Added ComfyUI 2.0 (Vue nodes) support: the crop overlay is rendered as a DOM element on top of the preview image, with drag and wheel zoom; the overlay is created/removed automatically when the nodes mode is switched at runtime, so no page reload is needed.

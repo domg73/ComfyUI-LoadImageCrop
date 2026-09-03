@@ -15,9 +15,10 @@
  *         overlay (dim outside + red border + output size) using the same
  *         transform the core captured -> pixel-perfect alignment.
  *  - Interaction:
- *      * crop drag  -> wraps widget.onPointerDown (clicks on the preview are
- *        consumed by the widget, so the node-level onMouseDown never fires
- *        there); node.onMouseMove / node.onMouseUp track the drag.
+ *      * crop drag  -> wraps widget.onPointerDown: the drag starts only when
+ *        the pointer is INSIDE the crop box (clicks elsewhere keep the core
+ *        canvas behavior); the pointer session's onDrag plus the node-level
+ *        onMouseMove / onMouseUp track the drag.
  *      * wheel zoom -> capture-phase "wheel" listener on document with a
  *        manual hit-test (there is no node-level onWheel hook), so the
  *        canvas pan/zoom is preempted only while the cursor is on the preview.
@@ -175,6 +176,15 @@ function markDirty(node) {
       node.graph.setDirtyCanvas(true);
     }
   } catch (_) { /* ignore */ }
+}
+
+/** Is the node-local point p inside the displayed crop box (rect + crop)? */
+function insideCropBox(p, st) {
+  const r = st.rect, c = st.crop;
+  if (!r || !c) return false;
+  const nx = (p[0] - r.x) / r.w;
+  const ny = (p[1] - r.y) / r.h;
+  return nx >= c.x && nx <= c.x + c.w && ny >= c.y && ny <= c.y + c.h;
 }
 
 function pointInRect(p, r) {
@@ -398,7 +408,7 @@ function wrapPreviewWidget(node) {
     // widget-row-relative offsets, so graph_mouse is not reliable here.
     const ev = pointer && pointer.eDown;
     const p = (ev ? eventToNodeLocal(ev, node, canvas) : null) || nodeLocalPos(node, canvas);
-    if (st.rect && st.crop && p && pointInRect(p, st.rect)) {
+    if (st.rect && st.crop && p && insideCropBox(p, st)) {
       // consume: crop drag instead of node drag; remember where (in
       // normalized image space) the grab happened so the rectangle follows
       // the pointer without jumping
@@ -421,9 +431,10 @@ function wrapPreviewWidget(node) {
       } catch (_) { /* ignore */ }
       return true;
     }
-    // pointer outside the image area -> keep core behavior
+    // outside the crop box -> keep the core canvas behavior (node
+    // select/move), same as the official Load Image
     if (origPointerDown) return origPointerDown(pointer, nodeArg, canvas);
-    return true;
+    return false;
   };
 }
 
@@ -509,7 +520,7 @@ function initNode(node) {
           writeCrop(node);
           markDirty(node);
         } else if (s.rect) {
-          const inside = !!s.crop && pointInRect(pos, s.rect);
+          const inside = insideCropBox(pos, s);
           try {
             const c = lircApp && lircApp.canvas && lircApp.canvas.canvas;
             if (c) c.style.cursor = inside ? "move" : "";
