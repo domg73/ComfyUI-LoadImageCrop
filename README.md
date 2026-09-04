@@ -14,10 +14,10 @@ Drop the folder into `ComfyUI/custom_nodes/` and restart ComfyUI. No extra depen
 
 The node looks and behaves like the official Load Image: same file picker, drag & drop and preview.
 
-- **Aspect Ratio** — default **Original**: the image passes through **uncropped** (W×H, no resample), no crop area is shown and the node behaves exactly like the official Load Image. The other ratios are locked: `1:1`, `2:3`, `3:2`, `3:4`, `4:3`, `9:16`, `16:9`, `21:9`.
+- **Aspect Ratio** — default **Original**: the image passes through **uncropped** (W×H, no resample), no crop area is shown and the node behaves exactly like the official Load Image. The other ratios are locked: `1:1`, `2:3`, `3:2`, `3:4`, `4:3`, `9:16`, `16:9`, `21:9`. The **Free (Custom)** option lifts the lock: any crop rectangle — in Free mode the four corners of the box show small resize handles (drag one to resize freely, the opposite corner stays fixed), the middle still moves the box, and the wheel zooms it at its drawn ratio.
 - With any locked ratio, a crop rectangle appears on the preview:
-  - **Move it**: click and drag the rectangle.
-  - **Zoom it: keep the mouse pointer over the preview (inside the crop area) and turn the mouse wheel** — wheel up enlarges, wheel down shrinks, always around the pointer. While the pointer is over the preview the wheel is captured by the crop, so the canvas behind does not pan/zoom; outside the preview the wheel works normally.
+  - **Move it**: click and drag the rectangle (the drag starts only inside the box, so the rest of the node behaves exactly like the official Load Image).
+  - **Zoom it**: keep the mouse pointer over the crop area and turn the mouse wheel — wheel up enlarges, wheel down shrinks, always around the pointer. While the pointer is over the crop area the wheel is captured by the crop, so the canvas behind does not pan/zoom; outside it the wheel works normally.
   - The rectangle is locked to the selected ratio and the output size is shown on the frame.
 - The crop is stored in the workflow and is also exposed via the hidden `crop_x` / `crop_y` / `crop_w` / `crop_h` inputs (normalized 0..1), so it can be set from an API script.
 
@@ -30,6 +30,7 @@ The node looks and behaves like the official Load Image: same file picker, drag 
 ## Notes
 
 - WYSIWYG: the output matches the framed area (±1 px integer rounding).
+- In **Free (Custom)** mode the box starts as a centered 90×90% area (so the corner handles stay inside the preview, not on the node border); dragging a handle to the edge reaches the exact full-frame crop.
 - Animated images in 2.0 mode: the first frame is shown.
 - In 2.0 the overlay follows the frontend's DOM structure; if a future frontend release changes the preview markup, the overlay layer may need a selector update.
 

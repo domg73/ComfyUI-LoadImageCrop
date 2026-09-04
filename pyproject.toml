@@ -1,7 +1,7 @@
 [project]
 name = "ComfyUI-LoadImageCrop"
 description = "An extended Load Image node with an aspect-ratio-locked, WYSIWYG crop rectangle that outputs the cropped IMAGE and MASK."
-version = "1.0.3"
+version = "1.0.4"
 license = "MIT"
 
 [project.urls]

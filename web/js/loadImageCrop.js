@@ -17,7 +17,8 @@
  *  - Interaction:
  *      * crop drag  -> wraps widget.onPointerDown: the drag starts only when
  *        the pointer is INSIDE the crop box (clicks elsewhere keep the core
- *        canvas behavior); the pointer session's onDrag plus the node-level
+ *        canvas behavior); in Free mode a corner hit resizes the box instead
+ *        of moving it. The pointer session's onDrag plus the node-level
  *        onMouseMove / onMouseUp track the drag.
  *      * wheel zoom -> capture-phase "wheel" listener on document with a
  *        manual hit-test (there is no node-level onWheel hook), so the
@@ -27,6 +28,9 @@
  *  - "Original" aspect ratio (default): no crop area is drawn, drag/zoom are
  *    disabled and the (hidden) crop widgets hold the full frame, so the image
  *    passes through uncropped.
+ *  - "Free (Custom)" aspect ratio: the box can be any size. Drag a corner
+ *    handle to resize it freely (the opposite corner stays fixed), drag
+ *    inside to move it; the wheel zooms keeping the box's own ratio.
  *  - 2.0 / Vue nodes mode (LiteGraph.vueNodesMode): the canvas preview
  *    widget does not exist there - the image is a DOM <img> (object-contain)
  *    inside the node's [data-node-id] element. The overlay is a positioned
@@ -61,18 +65,24 @@ function getState(node) {
       cropFromWorkflow: false,
       rect: null,      // cached displayed image rect, node-local {x,y,w,h}
       dragging: false,
-      dragOff: null,   // grab state: {nx, ny} pointer offset inside image, {cx, cy} crop origin at grab
+      dragOff: null,   // grab state: {nx, ny} pointer offset, {cx, cy, cw, ch} box at grab,
+                      // {corner} "nw"/"ne"/"sw"/"se" while resizing (Free mode)
       lastKey: null,
+      lastSrc: null,   // last displayed image src (file-change detection)
     };
   }
   return node.__lirc;
 }
 
+/** Aspect-ratio mode: null ("Original" = no crop), "free" (user-shaped
+ * box), or a positive number for the preset "W:H" entries. */
 function ratioOf(node) {
   const w = widgetOf(node, "aspect_ratio");
-  const v = w ? String(w.value) : "1:1";
+  const v = w ? String(w.value) : "Original";
   // "Original" (or no ratio match) -> no crop at all
   if (/^\s*original\b/i.test(v)) return null;
+  // "Free (Custom)" -> user-drawn box, any shape
+  if (/^\s*free\b/i.test(v)) return "free";
   // values look like "3:2 (Photo)" -> take the leading "W:H"
   const m = v.match(/(\d+(?:\.\d+)?)\s*:\s*(\d+(?:\.\d+)?)/);
   if (m) {
@@ -101,9 +111,19 @@ function maxFitRatio(ratio, imgW, imgH) {
   return { w: 1, h: imgW / (ratio * imgH) };
 }
 
+/** The default Free box: a centered 90x90% area. With a full-frame box the
+ * corner handles would sit exactly on the image corners, i.e. on the node
+ * border, where the core canvas grabs the pointer for a node drag instead of
+ * letting us start the resize. Dragging a handle to the edge still reaches
+ * the exact full-frame crop (the clamping allows it). */
+function freeCrop() {
+  return { x: 0.05, y: 0.05, w: 0.9, h: 0.9 };
+}
+
 function resetCrop(node) {
   const st = getState(node);
-  if (ratioOf(node) == null) {
+  const m = ratioOf(node);
+  if (m == null) {
     // "Original": no crop
     st.crop = null;
     st.cropFromWorkflow = false;
@@ -111,16 +131,32 @@ function resetCrop(node) {
   }
   const n = naturalSize(node);
   if (!n) return;
-  const fr = maxFitRatio(ratioOf(node), n.w, n.h);
+  if (m === "free") {
+    // Free keeps the current box (e.g. left over from a preset) or starts
+    // with the default Free box; the user then shapes it with the handles.
+    st.crop = st.crop || freeCrop();
+    fitCrop(node, st.crop);
+    st.cropFromWorkflow = false;
+    return;
+  }
+  const fr = maxFitRatio(m, n.w, n.h);
   st.crop = { x: (1 - fr.w) / 2, y: (1 - fr.h) / 2, w: fr.w, h: fr.h };
   st.cropFromWorkflow = false;
 }
 
-/** Clamp crop to image bounds, keeping the ratio (height-driven). */
+/** Clamp crop to image bounds. Presets keep the ratio (height-driven);
+ * "free" keeps the drawn shape (min size + bounds only). */
 function fitCrop(node, c) {
   const n = naturalSize(node);
   if (!n) return c;
   const ratio = ratioOf(node);
+  if (ratio === "free") {
+    c.w = Math.min(Math.max(c.w, 0.02), 1);
+    c.h = Math.min(Math.max(c.h, 0.02), 1);
+    c.x = Math.min(Math.max(0, c.x), Math.max(0, 1 - c.w));
+    c.y = Math.min(Math.max(0, c.y), Math.max(0, 1 - c.h));
+    return c;
+  }
   // normalized image space: w/h = ratio * (imgH/imgW)
   const k = ratio * (n.h / n.w);
   const fr = maxFitRatio(ratio, n.w, n.h);
@@ -133,7 +169,8 @@ function fitCrop(node, c) {
 
 function initCropFromWidgets(node) {
   const st = getState(node);
-  if (ratioOf(node) == null) {
+  const m = ratioOf(node);
+  if (m == null) {
     // "Original": ignore any saved crop, always full frame
     st.crop = null;
     writeCrop(node);
@@ -148,19 +185,22 @@ function initCropFromWidgets(node) {
   if (x == null || y == null || w == null || h == null) {
     resetCrop(node);
     writeCrop(node);
-  } else if (x === 0 && y === 0 && w === 1 && h === 1) {
+  } else if (m !== "free" && x === 0 && y === 0 && w === 1 && h === 1) {
     // Python defaults == "no crop saved yet" -> derive from the ratio
+    // (a full-frame Free box is a legitimate saved shape, keep it)
     resetCrop(node);
     writeCrop(node);
   } else {
     st.crop = { x, y, w, h };
     st.cropFromWorkflow = true;
+    fitCrop(node, st.crop);
   }
 }
 
 function writeCrop(node) {
   const st = getState(node);
-  const c = st.crop || { x: 0, y: 0, w: 1, h: 1 };
+  // no crop yet: full frame for "Original"/presets, default Free box for Free
+  const c = st.crop || (ratioOf(node) === "free" ? freeCrop() : { x: 0, y: 0, w: 1, h: 1 });
   // "Original" -> write the full frame so a run without frontend interaction
   // returns the image as-is
   const map = { crop_x: "x", crop_y: "y", crop_w: "w", crop_h: "h" };
@@ -185,6 +225,27 @@ function insideCropBox(p, st) {
   const nx = (p[0] - r.x) / r.w;
   const ny = (p[1] - r.y) / r.h;
   return nx >= c.x && nx <= c.x + c.w && ny >= c.y && ny <= c.y + c.h;
+}
+
+/** Free mode: the crop-box corner the node-local point p is near (within a
+ * screen-pixel threshold, so it works at any zoom), or null. */
+function cornerAt(p, node) {
+  const st = node.__lirc;
+  const nat = naturalSize(node);
+  const r = st && st.rect, c = st && st.crop;
+  if (!r || !c || !nat) return null;
+  // screen px -> node-local units through the canvas zoom
+  const z = (lircApp && lircApp.canvas && lircApp.canvas.ds && lircApp.canvas.ds.scale) || 1;
+  const th = 18 / z; // 18 screen px, in node-local units
+  const cx = r.x + c.x * r.w, cy = r.y + c.y * r.h;
+  const cw = c.w * r.w, ch = c.h * r.h;
+  const pts = { nw: [cx, cy], ne: [cx + cw, cy], sw: [cx, cy + ch], se: [cx + cw, cy + ch] };
+  let best = th, hit = null;
+  for (const k of Object.keys(pts)) {
+    const d = Math.hypot(p[0] - pts[k][0], p[1] - pts[k][1]);
+    if (d < best) { best = d; hit = k; }
+  }
+  return hit;
 }
 
 function pointInRect(p, r) {
@@ -275,13 +336,20 @@ function scheduleOverlay(node, ctx, widget, width, imgsArg) {
   const key = `${img.src}|${ratioOf(node)}`;
   if (st.lastKey !== key) {
     st.lastKey = key;
+    // a Free crop starts full-frame on a new image
+    if (ratioOf(node) === "free" && st.lastSrc !== img.src) st.crop = null;
+    st.lastSrc = img.src;
     if (!st.cropFromWorkflow) {
       resetCrop(node);
       // write the crop into the (hidden) widgets so a run without mouse
       // interaction crops exactly what the overlay shows
       writeCrop(node);
     } else {
-      if (st.crop) fitCrop(node, st.crop);
+      if (st.crop) {
+        fitCrop(node, st.crop);
+      } else {
+        resetCrop(node);
+      }
       writeCrop(node);
     }
     st.cropFromWorkflow = false;
@@ -322,6 +390,18 @@ function drawOverlay(node, ctx, transform, filter) {
     ctx.strokeStyle = "#ff4040";
     ctx.lineWidth = 2;
     ctx.strokeRect(rx + 1, ry + 1, Math.max(2, rw - 2), Math.max(2, rh - 2));
+    // Free-mode corner handles (white squares on the box corners)
+    if (ratioOf(node) === "free") {
+      const hs = 7;
+      const corners = [
+        [rx, ry], [rx + rw, ry], [rx, ry + rh], [rx + rw, ry + rh]
+      ];
+      for (const [hx, hy] of corners) {
+        ctx.fillStyle = "#ffffff";
+        ctx.fillRect(hx - hs / 2, hy - hs / 2, hs, hs);
+        ctx.strokeRect(hx - hs / 2, hy - hs / 2, hs, hs);
+      }
+    }
     // output size label
     const img = imgOf(node);
     if (img) {
@@ -365,18 +445,36 @@ function endCropDrag(node) {
   } catch (_) { /* ignore */ }
 }
 
-/** Move the crop so its grab point follows the DOM pointer event. */
+/** Apply one drag step: move the box (grab point follows the pointer), or
+ * resize it from a corner when corner is set (the opposite corner stays
+ * fixed). p is the pointer in normalized image space. */
+function stepCropDrag(node, off, p) {
+  const s = getState(node);
+  if (!s.crop) return;
+  if (off.corner) {
+    const fx = off.corner === "nw" || off.corner === "sw" ? off.cx + off.cw : off.cx;
+    const fy = off.corner === "nw" || off.corner === "ne" ? off.cy + off.ch : off.cy;
+    s.crop.x = Math.min(fx, p[0]);
+    s.crop.y = Math.min(fy, p[1]);
+    s.crop.w = Math.abs(p[0] - fx);
+    s.crop.h = Math.abs(p[1] - fy);
+  } else {
+    s.crop.x = p[0] - off.nx + off.cx;
+    s.crop.y = p[1] - off.ny + off.cy;
+  }
+  fitCrop(node, s.crop);
+  writeCrop(node);
+  markDirty(node);
+}
+
+/** Move (or resize, in Free mode) the crop toward the DOM pointer event. */
 function dragCropTo(e, node, canvas) {
   const s = getState(node);
   if (!s.dragging || !s.rect || !s.crop || !s.dragOff) return;
   const p = eventToNodeLocal(e, node, canvas) || nodeLocalPos(node, canvas);
   if (!p) return;
   const r = s.rect;
-  s.crop.x = (p[0] - r.x) / r.w - s.dragOff.nx + s.dragOff.cx;
-  s.crop.y = (p[1] - r.y) / r.h - s.dragOff.ny + s.dragOff.cy;
-  fitCrop(node, s.crop);
-  writeCrop(node);
-  markDirty(node);
+  stepCropDrag(node, s.dragOff, [(p[0] - r.x) / r.w, (p[1] - r.y) / r.h]);
 }
 
 /* --------------------------- widget wrapping -------------------------- */
@@ -408,14 +506,17 @@ function wrapPreviewWidget(node) {
     // widget-row-relative offsets, so graph_mouse is not reliable here.
     const ev = pointer && pointer.eDown;
     const p = (ev ? eventToNodeLocal(ev, node, canvas) : null) || nodeLocalPos(node, canvas);
-    if (st.rect && st.crop && p && insideCropBox(p, st)) {
+    // Free mode: a hit on a box corner resizes the box (opposite corner
+    // fixed); elsewhere inside the box it moves as before
+    const corner = st.rect && st.crop && p && ratioOf(node) === "free" ? cornerAt(p, node) : null;
+    if (st.rect && st.crop && p && (corner || insideCropBox(p, st))) {
       // consume: crop drag instead of node drag; remember where (in
       // normalized image space) the grab happened so the rectangle follows
       // the pointer without jumping
       const nx = (p[0] - st.rect.x) / st.rect.w;
       const ny = (p[1] - st.rect.y) / st.rect.h;
       st.dragging = true;
-      st.dragOff = { nx, ny, cx: st.crop.x, cy: st.crop.y };
+      st.dragOff = { nx, ny, cx: st.crop.x, cy: st.crop.y, cw: st.crop.w, ch: st.crop.h, corner };
       // Drive the drag from the pointer session itself. In the Vue frontend
       // the widget's mini-canvas captures the pointer and stops propagation,
       // so the node-level onMouseDown/onMouseMove are never fired there;
@@ -427,7 +528,8 @@ function wrapPreviewWidget(node) {
         pointer.onDragEnd = () => endCropDrag(node);
       }
       try {
-        if (canvas && canvas.canvas) canvas.canvas.style.cursor = "move";
+        const cur = corner ? (corner === "nw" || corner === "se" ? "nwse-resize" : "nesw-resize") : "move";
+        if (canvas && canvas.canvas) canvas.canvas.style.cursor = cur;
       } catch (_) { /* ignore */ }
       return true;
     }
@@ -482,6 +584,12 @@ function initNode(node) {
           if (r == null) {
             // "Original": drop the crop area entirely
             st.crop = null;
+          } else if (r === "free") {
+            // Free keeps the box the user has drawn (or the default Free box)
+            if (n) {
+              st.crop = st.crop || freeCrop();
+              fitCrop(node, st.crop);
+            }
           } else if (n) {
             const fr = maxFitRatio(r, n.w, n.h);
             st.crop = { x: (1 - fr.w) / 2, y: (1 - fr.h) / 2, w: fr.w, h: fr.h };
@@ -511,19 +619,21 @@ function initNode(node) {
         const s = getState(node);
         if (s.dragging && s.rect && s.crop && s.dragOff) {
           const r = s.rect;
-          // new top-left = pointer - grab offset, in normalized image space
-          const nx = (pos[0] - r.x) / r.w - s.dragOff.nx + s.dragOff.cx;
-          const ny = (pos[1] - r.y) / r.h - s.dragOff.ny + s.dragOff.cy;
-          s.crop.x = nx;
-          s.crop.y = ny;
-          fitCrop(node, s.crop);
-          writeCrop(node);
-          markDirty(node);
+          // pointer in normalized image space
+          stepCropDrag(node, s.dragOff, [(pos[0] - r.x) / r.w, (pos[1] - r.y) / r.h]);
         } else if (s.rect) {
-          const inside = insideCropBox(pos, s);
+          let cur = "";
+          if (s.crop) {
+            const corner = ratioOf(node) === "free" ? cornerAt(pos, node) : null;
+            if (corner) {
+              cur = corner === "nw" || corner === "se" ? "nwse-resize" : "nesw-resize";
+            } else if (insideCropBox(pos, s)) {
+              cur = "move";
+            }
+          }
           try {
             const c = lircApp && lircApp.canvas && lircApp.canvas.canvas;
-            if (c) c.style.cursor = inside ? "move" : "";
+            if (c) c.style.cursor = cur;
           } catch (_) { /* ignore */ }
         }
       };
@@ -607,6 +717,14 @@ function layoutVueOverlay(node) {
     const r = ratioOf(node);
     if (r == null) {
       st.crop = null;
+    } else if (r === "free") {
+      // Free: the default Free box on a new image, keep the drawn box on a
+      // ratio-only change; clamp to bounds + min size
+      if (st.lastSrc !== parts.img.src || !st.crop) st.crop = freeCrop();
+      st.crop.w = Math.min(Math.max(st.crop.w, 0.02), 1);
+      st.crop.h = Math.min(Math.max(st.crop.h, 0.02), 1);
+      st.crop.x = Math.min(Math.max(0, st.crop.x), Math.max(0, 1 - st.crop.w));
+      st.crop.y = Math.min(Math.max(0, st.crop.y), Math.max(0, 1 - st.crop.h));
     } else if (!st.cropFromWorkflow) {
       const fr = maxFitRatio(r, vw, vh);
       st.crop = { x: (1 - fr.w) / 2, y: (1 - fr.h) / 2, w: fr.w, h: fr.h };
@@ -623,7 +741,12 @@ function layoutVueOverlay(node) {
         w,
         h,
       };
+    } else {
+      // no saved box (e.g. the ratio was Original before): derive the default
+      const fr = maxFitRatio(r, vw, vh);
+      st.crop = { x: (1 - fr.w) / 2, y: (1 - fr.h) / 2, w: fr.w, h: fr.h };
     }
+    st.lastSrc = parts.img.src;
     st.cropFromWorkflow = false;
     writeCrop(node);
   }
@@ -663,6 +786,9 @@ function layoutVueOverlay(node) {
   label.textContent = `${ow} × ${oh}`;
   // room for the label inside the box?
   label.style.display = box.offsetHeight > 18 ? "" : "none";
+  // corner handles are only useful in Free mode (presets keep their ratio)
+  const hs = st.vue.handles;
+  if (hs) for (const h of hs) h.style.display = ratioOf(node) === "free" ? "" : "none";
 }
 
 function buildVueOverlay(node, parts) {
@@ -680,44 +806,118 @@ function buildVueOverlay(node, parts) {
   label.style.cssText =
     "position:absolute;left:4px;top:2px;font:11px monospace;color:#fff;background:rgba(0,0,0,0.8);padding:0 4px;white-space:nowrap;";
   box.appendChild(label);
+  // Free-mode corner handles (shown only while aspect_ratio is Free):
+  // dragging one resizes the box freely, the opposite corner stays fixed
+  const handles = [];
+  for (const corner of ["nw", "ne", "sw", "se"]) {
+    const h = document.createElement("div");
+    h.style.cssText =
+      "position:absolute;box-sizing:border-box;width:12px;height:12px;" +
+      "background:#fff;border:1px solid #ff4040;display:none;" +
+      (corner.startsWith("n") ? "top:-6px;" : "bottom:-6px;") +
+      (corner.endsWith("w") ? "left:-6px;" : "right:-6px;");
+    box.appendChild(h);
+    handles.push(h);
+  }
   ov.appendChild(box);
   parts.panel.appendChild(ov);
 
+  // pointer in normalized image space, mapped the same way as the overlay
+  // box (object-contain inside the panel). Using the <img> element rect
+  // directly drifts when the element doesn't exactly cover the contained
+  // image area (the dragged corner then lags the pointer).
   const imgPos = (e) => {
-    const r = parts.img.getBoundingClientRect();
+    const pr = parts.panel.getBoundingClientRect();
+    const vw = parts.img.naturalWidth || 1;
+    const vh = parts.img.naturalHeight || 1;
+    const pw = pr.width || 1;
+    const ph = pr.height || 1;
+    const s = Math.min(pw / vw, ph / vh);
+    const dw = vw * s, dh = vh * s;
+    const ox = (pw - dw) / 2, oy = (ph - dh) / 2;
     return {
-      nx: (e.clientX - r.left) / (r.width || 1),
-      ny: (e.clientY - r.top) / (r.height || 1)
+      nx: (e.clientX - pr.left - ox) / (dw || 1),
+      ny: (e.clientY - pr.top - oy) / (dh || 1)
     };
   };
-  const insideCrop = (nx, ny, c) =>
-    !!c && nx >= c.x && nx <= c.x + c.w && ny >= c.y && ny <= c.y + c.h;
+  // displayed image width in screen px (for screen-pixel paddings)
+  const imgScreenW = () => {
+    const pr = parts.panel.getBoundingClientRect();
+    const s = Math.min((pr.width || 1) / (parts.img.naturalWidth || 1), (pr.height || 1) / (parts.img.naturalHeight || 1));
+    return (parts.img.naturalWidth || 1) * s;
+  };
+  // inside the crop box; in Free mode the test is padded (screen px) so
+  // the corner handles stay grabbable from outside the box
+  const inBox = (nx, ny, c) => {
+    if (!c) return false;
+    // Free: pad the hit area by a few screen px so the corner handles stay
+    // grabbable from outside the box
+    const m = ratioOf(node) === "free" ? 8 / (imgScreenW() || 1) : 0;
+    return nx >= c.x - m && nx <= c.x + c.w + m && ny >= c.y - m && ny <= c.y + c.h + m;
+  };
+  // the crop-box corner near the client point (Free mode), or null
+  const cornerAtClient = (cx, cy) => {
+    const br = box.getBoundingClientRect();
+    const pts = {
+      nw: [br.left, br.top], ne: [br.right, br.top],
+      sw: [br.left, br.bottom], se: [br.right, br.bottom]
+    };
+    let best = 18, hit = null;
+    for (const k of Object.keys(pts)) {
+      const d = Math.hypot(cx - pts[k][0], cy - pts[k][1]);
+      if (d < best) { best = d; hit = k; }
+    }
+    return hit;
+  };
 
   let drag = null;
   ov.addEventListener("pointerdown", (e) => {
     const s = getState(node);
     const { nx, ny } = imgPos(e);
-    if (!s.crop || !insideCrop(nx, ny, s.crop)) return;
+    if (!s.crop || !inBox(nx, ny, s.crop)) return;
     // consume only inside the crop box: outside, let the event reach the
     // panel (2.0 opens the mask editor on preview click)
     e.preventDefault();
     e.stopPropagation();
-    drag = { nx, ny, cx: s.crop.x, cy: s.crop.y };
+    // Free mode: a hit on a box corner resizes it (opposite corner fixed)
+    const corner = ratioOf(node) === "free" ? cornerAtClient(e.clientX, e.clientY) : null;
+    drag = { nx, ny, cx: s.crop.x, cy: s.crop.y, cw: s.crop.w, ch: s.crop.h, corner };
     s.dragging = true;
     try { ov.setPointerCapture(e.pointerId); } catch (_) { /* ignore */ }
-    ov.style.cursor = "move";
+    ov.style.cursor = corner
+      ? (corner === "nw" || corner === "se" ? "nwse-resize" : "nesw-resize")
+      : "move";
   });
   ov.addEventListener("pointermove", (e) => {
     const s = getState(node);
     const { nx, ny } = imgPos(e);
     if (drag && s.crop) {
-      s.crop.x = nx - drag.nx + drag.cx;
-      s.crop.y = ny - drag.ny + drag.cy;
+      if (drag.corner) {
+        // resize: the opposite corner (from the box at drag start) stays
+        // fixed, the box grows/shrinks toward the pointer
+        const fx = drag.corner === "nw" || drag.corner === "sw" ? drag.cx + drag.cw : drag.cx;
+        const fy = drag.corner === "nw" || drag.corner === "ne" ? drag.cy + drag.ch : drag.cy;
+        s.crop.x = Math.min(fx, nx);
+        s.crop.y = Math.min(fy, ny);
+        s.crop.w = Math.abs(nx - fx);
+        s.crop.h = Math.abs(ny - fy);
+      } else {
+        s.crop.x = nx - drag.nx + drag.cx;
+        s.crop.y = ny - drag.ny + drag.cy;
+      }
       fitCrop(node, s.crop);
       writeCrop(node);
       layoutVueOverlay(node);
     } else {
-      ov.style.cursor = insideCrop(nx, ny, s.crop) ? "move" : "default";
+      let cur = "default";
+      if (inBox(nx, ny, s.crop)) {
+        cur = "move";
+        if (ratioOf(node) === "free" && s.crop) {
+          const cn = cornerAtClient(e.clientX, e.clientY);
+          if (cn) cur = cn === "nw" || cn === "se" ? "nwse-resize" : "nesw-resize";
+        }
+      }
+      ov.style.cursor = cur;
     }
   });
   const endDrag = (e) => {
@@ -741,14 +941,17 @@ function buildVueOverlay(node, parts) {
     e.stopPropagation();
     const n = { w: parts.img.naturalWidth, h: parts.img.naturalHeight };
     const r = ratioOf(node);
-    const fr = maxFitRatio(r, n.w, n.h);
+    if (r == null) return;
+    // Free: zoom keeps the box's own (drawn) ratio
+    const rr = r === "free" ? (s.crop.w * n.w) / (s.crop.h * n.h) : r;
+    const fr = maxFitRatio(rr, n.w, n.h);
     const c = s.crop;
     const factor = e.deltaY < 0 ? 1.08 : 1 / 1.08;
     let newH = c.h * factor;
     if (newH > fr.h) newH = fr.h;
     if (newH < 0.02) newH = 0.02;
     if (Math.abs(newH - c.h) <= 1e-6) return;
-    const k = r * (n.h / n.w);
+    const k = rr * (n.h / n.w);
     const newW = newH * k;
     const { nx, ny } = imgPos(e);
     const cx = nx - c.x;
@@ -768,7 +971,7 @@ function buildVueOverlay(node, parts) {
     ro.observe(parts.panel);
   } catch (_) { /* ResizeObserver optional */ }
 
-  st.vue = { ov, box, label, panel: parts.panel, img: parts.img, ro };
+  st.vue = { ov, box, label, handles, panel: parts.panel, img: parts.img, ro };
   layoutVueOverlay(node);
 }
 
@@ -839,20 +1042,28 @@ function installWheelInterceptor(app) {
             if (st.crop) {
               e.preventDefault();
               e.stopPropagation();
-              const ir = imgEl.getBoundingClientRect();
+              // same object-contain mapping as the overlay layout (the <img>
+              // element rect can drift from the contained image area)
+              const pr = (st.vue.panel || imgEl.parentElement).getBoundingClientRect();
               const nat = { w: imgEl.naturalWidth, h: imgEl.naturalHeight };
               const r = ratioOf(n);
-              const fr = maxFitRatio(r, nat.w, nat.h);
+              if (r == null) return;
+              // Free: zoom keeps the box's own (drawn) ratio
+              const rr = r === "free" ? (st.crop.w * nat.w) / (st.crop.h * nat.h) : r;
+              const fr = maxFitRatio(rr, nat.w, nat.h);
               const c = st.crop;
               const factor = e.deltaY < 0 ? 1.08 : 1 / 1.08;
               let newH = c.h * factor;
               if (newH > fr.h) newH = fr.h;
               if (newH < 0.02) newH = 0.02;
               if (Math.abs(newH - c.h) > 1e-6) {
-                const k = r * (nat.h / nat.w);
+                const k = rr * (nat.h / nat.w);
                 const newW = newH * k;
-                const nx = (e.clientX - ir.left) / (ir.width || 1);
-                const ny = (e.clientY - ir.top) / (ir.height || 1);
+                const zs = Math.min((pr.width || 1) / nat.w, (pr.height || 1) / nat.h);
+                const dw = nat.w * zs, dh = nat.h * zs;
+                const ox = (pr.width - dw) / 2, oy = (pr.height - dh) / 2;
+                const nx = (e.clientX - pr.left - ox) / (dw || 1);
+                const ny = (e.clientY - pr.top - oy) / (dh || 1);
                 c.x = c.x + (c.w - newW) * (nx - c.x);
                 c.y = c.y + (c.h - newH) * (ny - c.y);
                 c.w = newW;
@@ -876,7 +1087,10 @@ function installWheelInterceptor(app) {
             const img = naturalSize(n);
             if (img) {
               const c = st.crop;
-              const fr = maxFitRatio(ratioOf(n), img.w, img.h);
+              const rm = ratioOf(n);
+              // Free: zoom keeps the box's own (drawn) ratio
+              const rr = rm === "free" ? (c.w * img.w) / (c.h * img.h) : rm;
+              const fr = maxFitRatio(rr, img.w, img.h);
               const factor = e.deltaY < 0 ? 1.08 : 1 / 1.08;
               // clamp the TARGET size first: at a limit the size stays the
               // same, so the rectangle must not move
@@ -884,7 +1098,7 @@ function installWheelInterceptor(app) {
               if (newH > fr.h) newH = fr.h;
               if (newH < 0.02) newH = 0.02;
               if (Math.abs(newH - c.h) > 1e-6) {
-                const k = ratioOf(n) * (img.h / img.w);
+                const k = rr * (img.h / img.w);
                 const newW = newH * k;
                 const r = st.rect;
                 // zoom around the cursor

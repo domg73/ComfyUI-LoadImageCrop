@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.0.4 (2026-09-04)
+
+- Added the **Free (Custom)** aspect-ratio option (both the classic and the 2.0 layouts): it lifts the ratio lock so the crop box can be any shape. The four box corners show resize handles — dragging one resizes the box freely (the opposite corner stays fixed), dragging inside the box still moves it, and the wheel zooms it at the box's own drawn ratio. The box starts as a centered 90×90% area so the handles stay inside the preview; a new image starts from that box too. The default (Original) and the preset ratios are unchanged.
+
 ## v1.0.3 (2026-09-03)
 
 - Classic nodes: the crop drag now starts only when the pointer is inside the crop box (the "move" cursor follows the same area); clicks and drags elsewhere keep the core node behavior, matching the official Load Image passthrough.
