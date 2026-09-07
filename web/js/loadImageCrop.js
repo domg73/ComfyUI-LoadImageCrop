@@ -310,6 +310,9 @@ function scheduleOverlay(node, ctx, widget, width, imgsArg) {
   if (imgs.length === 1 && !idx) idx = 0;
   const img = imgs[idx];
   if (!img) { st.rect = null; return; }
+  // Keep the node visible to the core isImageNode() gate so the
+  // "Open in MaskEditor | Image Canvas" context menu entry stays available.
+  node.previewMediaType = "image";
   const nw = img.naturalWidth || img.width;
   const nh = img.naturalHeight || img.height;
   if (!nw || !nh) { st.rect = null; return; }
@@ -648,7 +651,11 @@ function initNode(node) {
       };
       // context menu: the 2.0 menu already contains the core "Paste Image"
       // entry, so ours is added only in classic mode; both entries drive
-      // the native node.pasteFile / node.pasteFiles methods
+      // the native node.pasteFile / node.pasteFiles methods.
+      // Chain into the core implementation so its entries (Open Image,
+      // Save Image, Bypass, Clipspace, Open in MaskEditor | Image Canvas,
+      // ...) are preserved on this node
+      const coreExtraMenu = node.getExtraMenuOptions;
       node.getExtraMenuOptions = (canvas, options) => {
         const items = [];
         if (!isVueMode()) {
@@ -657,7 +664,14 @@ function initNode(node) {
             callback: () => pasteFromClipboard(node)
           });
         }
-        return items.concat(options || []);
+        let base = options || [];
+        if (typeof coreExtraMenu === "function") {
+          try {
+            const r = coreExtraMenu.call(node, canvas, base);
+            if (Array.isArray(r)) base = r;
+          } catch (_) { /* ignore */ }
+        }
+        return items.concat(base);
       };
       initCropFromWidgets(node);
     }
@@ -708,6 +722,13 @@ function layoutVueOverlay(node) {
   const st = getState(node);
   const parts = vuePartsOf(node);
   if (!parts || !parts.img.complete || !parts.img.naturalWidth) return;
+
+  // Keep the node visible to the core image gates (isImageNode, mask
+  // editor, open/copy image) which read node.imgs / previewMediaType.
+  if (!Array.isArray(node.imgs) || !node.imgs.length) {
+    node.imgs = [parts.img];
+  }
+  node.previewMediaType = "image";
 
   const vw = parts.img.naturalWidth;
   const vh = parts.img.naturalHeight;

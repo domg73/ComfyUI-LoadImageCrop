@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.0.5 (2026-09-07)
+
+- Fixed the node's right-click context menu: it now preserves the core's extra entries (Open Image, Save Image, Bypass, Clipspace, and "Open in MaskEditor | Image Canvas"). The node's menu hook replaced the core implementation instead of chaining into it, which silently dropped those entries.
+- The node now reliably exposes its loaded preview to the core image checks (`node.imgs` / `previewMediaType`) in both the classic and the 2.0 layouts, so the Mask Editor and the image menu actions operate on it.
+
 ## v1.0.4 (2026-09-04)
 
 - Added the **Free (Custom)** aspect-ratio option (both the classic and the 2.0 layouts): it lifts the ratio lock so the crop box can be any shape. The four box corners show resize handles — dragging one resizes the box freely (the opposite corner stays fixed), dragging inside the box still moves it, and the wheel zooms it at the box's own drawn ratio. The box starts as a centered 90×90% area so the handles stay inside the preview; a new image starts from that box too. The default (Original) and the preset ratios are unchanged.
