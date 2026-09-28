@@ -654,7 +654,11 @@ function initNode(node) {
       // the native node.pasteFile / node.pasteFiles methods.
       // Chain into the core implementation so its entries (Open Image,
       // Save Image, Bypass, Clipspace, Open in MaskEditor | Image Canvas,
-      // ...) are preserved on this node
+      // ...) are preserved on this node. The core mutates `options` (the
+      // base list) in place, so we return ONLY our own additions — the
+      // canvas already owns the base list. Concatenating it here would
+      // duplicate every base entry on builds whose core returns the
+      // mutated list (e.g. ComfyUI nightly/dev).
       const coreExtraMenu = node.getExtraMenuOptions;
       node.getExtraMenuOptions = (canvas, options) => {
         const items = [];
@@ -664,14 +668,12 @@ function initNode(node) {
             callback: () => pasteFromClipboard(node)
           });
         }
-        let base = options || [];
         if (typeof coreExtraMenu === "function") {
           try {
-            const r = coreExtraMenu.call(node, canvas, base);
-            if (Array.isArray(r)) base = r;
+            coreExtraMenu.call(node, canvas, options || []);
           } catch (_) { /* ignore */ }
         }
-        return items.concat(base);
+        return items;
       };
       initCropFromWidgets(node);
     }

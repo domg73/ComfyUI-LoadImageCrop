@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.0.6 (2026-09-07)
+
+**Fixed**
+- Context menu duplication: the `getExtraMenuOptions` override previously returned `items.concat(base)`, concatenating the base menu list. On ComfyUI nightly/dev builds the base node no longer implements `getExtraMenuOptions` (its menu entries are provided by the Vue frontend), so the canvas' `options = extra.concat(options)` duplicated the base menu list, making the whole context menu appear twice. The override now returns only its own "Paste Image from Clipboard" entry, which is robust across all ComfyUI builds (stable and nightly, classic and Vue nodes).
+
 ## v1.0.5 (2026-09-07)
 
 - Fixed the node's right-click context menu: it now preserves the core's extra entries (Open Image, Save Image, Bypass, Clipspace, and "Open in MaskEditor | Image Canvas"). The node's menu hook replaced the core implementation instead of chaining into it, which silently dropped those entries.
