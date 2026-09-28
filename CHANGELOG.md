@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.0.6 (2026-09-07)
+## v1.0.6 (2026-09-28)
 
 **Fixed**
 - Context menu duplication: the `getExtraMenuOptions` override previously returned `items.concat(base)`, concatenating the base menu list. On ComfyUI nightly/dev builds the base node no longer implements `getExtraMenuOptions` (its menu entries are provided by the Vue frontend), so the canvas' `options = extra.concat(options)` duplicated the base menu list, making the whole context menu appear twice. The override now returns only its own "Paste Image from Clipboard" entry, which is robust across all ComfyUI builds (stable and nightly, classic and Vue nodes).
