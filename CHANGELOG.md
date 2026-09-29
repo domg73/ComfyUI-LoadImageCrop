@@ -3,7 +3,7 @@
 ## v1.0.7 (2026-09-29)
 
 **Added**
-- Optional **pre-crop flip** (`flip` input: `None` / `Horizontal` / `Vertical`, default `None`). Selecting a flip mirrors the image in the browser (canvas), saves the result to `input/` as `{name}-flipH.png` / `{name}-flipV.png`, and switches the node's image input to the flipped file. The preview shows the flipped image, so the crop rectangle is framed on it (WYSIWYG). `None` reverts to the original image. A flip does not change the image size, only mirrors it.
+- Optional **pre-crop flip** (`flip` input: `None` / `Horizontal` / `Vertical`, default `None`). Selecting a flip mirrors the image in the browser (canvas), saves the result to `input/` as `{name}-flipH.png` / `{name}-flipV.png`, and switches the node's image input to the flipped file. The flipped image is used everywhere (preview, mask editor, output); the crop rectangle is framed on it (WYSIWYG). `None` reverts to the original image. A flip does not change the image size, only mirrors it.
 
 ## v1.0.6 (2026-09-28)
 
