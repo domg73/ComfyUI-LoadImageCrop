@@ -29,6 +29,12 @@ ASPECT_RATIOS = [
     "21:9 (Ultrawide)",
 ]
 
+FLIP_OPTIONS = [
+    "None",
+    "Horizontal",
+    "Vertical",
+]
+
 
 class LoadImageCrop:
     """Like the official Load Image node, plus:
@@ -60,6 +66,7 @@ class LoadImageCrop:
             "required": {
                 "image": (sorted(files), {"image_upload": True}),
                 "aspect_ratio": (ASPECT_RATIOS,),
+                "flip": (FLIP_OPTIONS, {"default": "None"}),
                 "crop_x": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.0001}),
                 "crop_y": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.0001}),
                 "crop_w": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.0001}),
@@ -67,7 +74,7 @@ class LoadImageCrop:
             }
         }
 
-    def load_image(self, image, aspect_ratio, crop_x, crop_y, crop_w, crop_h):
+    def load_image(self, image, aspect_ratio, flip, crop_x, crop_y, crop_w, crop_h):
         output_image, output_mask = self._load(image)
         if aspect_ratio == "Original":
             # the image is returned as-is, regardless of the crop values
@@ -149,7 +156,7 @@ class LoadImageCrop:
         return (output_image, output_mask)
 
     @classmethod
-    def IS_CHANGED(s, image, aspect_ratio, crop_x, crop_y, crop_w, crop_h):
+    def IS_CHANGED(s, image, aspect_ratio, flip, crop_x, crop_y, crop_w, crop_h):
         # file identity via stat (size + mtime) instead of hashing the whole file
         image_path = folder_paths.get_annotated_filepath(image)
         st = os.stat(image_path)
@@ -157,11 +164,11 @@ class LoadImageCrop:
         m.update(str(st.st_size).encode())
         m.update(str(st.st_mtime_ns).encode())
         # full-precision crop values (repr) so any change forces a re-run
-        m.update(f"|{aspect_ratio}|{crop_x!r},{crop_y!r},{crop_w!r},{crop_h!r}".encode())
+        m.update(f"|{aspect_ratio}|{flip}|{crop_x!r},{crop_y!r},{crop_w!r},{crop_h!r}".encode())
         return m.digest().hex()
 
     @classmethod
-    def VALIDATE_INPUTS(s, image, aspect_ratio=None, crop_x=None, crop_y=None, crop_w=None, crop_h=None):
+    def VALIDATE_INPUTS(s, image, aspect_ratio=None, flip=None, crop_x=None, crop_y=None, crop_w=None, crop_h=None):
         if not folder_paths.exists_annotated_filepath(image):
             return "Invalid image file: {}".format(image)
         return True

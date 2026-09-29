@@ -44,6 +44,7 @@ const LIRC = {
   NODE_NAME: "LoadImageCrop",
   PREVIEW_WIDGET: "$$canvas-image-preview",
   CROP_KEYS: ["crop_x", "crop_y", "crop_w", "crop_h"],
+  FLIP_WIDGET: "flip",
   TAG: "[LoadImageCrop]"
 };
 
@@ -69,9 +70,89 @@ function getState(node) {
                       // {corner} "nw"/"ne"/"sw"/"se" while resizing (Free mode)
       lastKey: null,
       lastSrc: null,   // last displayed image src (file-change detection)
+      originalImage: null, // the original image filename (before any flip)
     };
   }
   return node.__lirc;
+}
+
+/** Current flip mode: "None", "Horizontal", or "Vertical". */
+function flipOf(node) {
+  const w = widgetOf(node, LIRC.FLIP_WIDGET);
+  return w ? w.value : "None";
+}
+
+/**
+ * Flip the image via the backend endpoint and change the node's image input
+ * to the flipped file. The core then reloads the node with the flipped image,
+ * so the preview shows the flipped image and the crop works normally.
+ */
+async function applyFlip(node, flip) {
+  const st = getState(node);
+  const imgW = widgetOf(node, "image");
+  if (!imgW) return;
+  // Track the original image (before any flip).
+  if (!st.originalImage) st.originalImage = imgW.value;
+  if (flip === "None") {
+    // Revert to the original image.
+    const origCb = imgW.__lircOrigCallback;
+    imgW.value = st.originalImage;
+    if (typeof origCb === "function") origCb(st.originalImage);
+    markDirty(node);
+    try {
+      if (lircApp && lircApp.canvas) lircApp.canvas.setDirtyCanvas(true);
+      if (lircApp && lircApp.graph) lircApp.graph.setDirtyCanvas(true);
+    } catch (_) { /* ignore */ }
+    return;
+  }
+  // Flip the image in the browser (canvas), upload via ComfyUI's
+  // /upload/image endpoint, then change the image input to the flipped file.
+  try {
+    // Get the image already loaded by the core (node.imgs).
+    const src = (node.imgs && node.imgs[0]) || null;
+    if (!src) throw new Error("no loaded image (node.imgs empty)");
+    const img = await createImageBitmap(src);
+    // Flip via canvas.
+    const canvas = document.createElement("canvas");
+    canvas.width = flip === "Vertical" ? img.height : img.width;
+    canvas.height = flip === "Vertical" ? img.width : img.height;
+    const cctx = canvas.getContext("2d");
+    if (!cctx) throw new Error("no 2d context");
+    if (flip === "Horizontal") {
+      cctx.translate(canvas.width, 0);
+      cctx.scale(-1, 1);
+    } else {
+      cctx.translate(0, canvas.height);
+      cctx.scale(1, -1);
+    }
+    cctx.drawImage(img, 0, 0);
+    // Convert to a PNG blob.
+    const pngBlob = await new Promise((r) => canvas.toBlob(r, "image/png"));
+    if (!pngBlob) throw new Error("toBlob failed");
+    // Build the destination filename: {stem}-flipH.png / {stem}-flipV.png
+    const stem = st.originalImage.replace(/\.[^.]*$/, "");
+    const suffix = flip === "Horizontal" ? "flipH" : "flipV";
+    const destName = `${stem}-${suffix}.png`;
+    // Upload via ComfyUI's /upload/image endpoint.
+    const fd = new FormData();
+    fd.append("image", pngBlob, destName);
+    fd.append("overwrite", "true");
+    const upResp = await fetch("/upload/image", { method: "POST", body: fd });
+    const upData = await upResp.json();
+    if (upData.name == null) throw new Error("upload failed");
+    // Change the image input to the flipped file and trigger the core's
+    // original callback (the one that updates the preview).
+    const origCb = imgW.__lircOrigCallback;
+    imgW.value = upData.name;
+    if (typeof origCb === "function") origCb(upData.name);
+    markDirty(node);
+    try {
+      if (lircApp && lircApp.canvas) lircApp.canvas.setDirtyCanvas(true);
+      if (lircApp && lircApp.graph) lircApp.graph.setDirtyCanvas(true);
+    } catch (_) { /* ignore */ }
+  } catch (e) {
+    console.warn(LIRC.TAG, "flip failed:", e);
+  }
 }
 
 /** Aspect-ratio mode: null ("Original" = no crop), "free" (user-shaped
@@ -610,10 +691,28 @@ function initNode(node) {
       if (imgW && !imgW.__lircBound) {
         imgW.__lircBound = true;
         const prev = imgW.callback;
+        imgW.__lircOrigCallback = prev;
         imgW.callback = (v) => {
           if (typeof prev === "function") prev(v);
+          // Update originalImage when the user picks a non-flipped image
+          // (i.e. the value does not match our flip filename pattern).
+          const st = getState(node);
+          if (!/-flip[HV]\.(png|jpg|jpeg|webp)$/i.test(String(v))) {
+            st.originalImage = v;
+          }
           // let the core load the image; crop resets when the overlay sees a
           // new image key (handled in scheduleOverlay)
+        };
+      }
+      // flip widget: when it changes, flip the image via the backend and
+      // change the image input to the flipped file.
+      const flipW = widgetOf(node, LIRC.FLIP_WIDGET);
+      if (flipW && !flipW.__lircBound) {
+        flipW.__lircBound = true;
+        const prev = flipW.callback;
+        flipW.callback = (v) => {
+          if (typeof prev === "function") prev(v);
+          applyFlip(node, v);
         };
       }
       // mouse tracking (node-level; fallback for non-Vue frontends plus

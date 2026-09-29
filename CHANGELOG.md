@@ -1,6 +1,11 @@
 # Changelog
 
-## v1.0.6 (2026-09-07)
+## v1.0.7 (2026-09-29)
+
+**Added**
+- Optional **pre-crop flip** (`flip` input: `None` / `Horizontal` / `Vertical`, default `None`). Selecting a flip mirrors the image in the browser (canvas), saves the result to `input/` as `{name}-flipH.png` / `{name}-flipV.png`, and switches the node's image input to the flipped file. The preview shows the flipped image, so the crop rectangle is framed on it (WYSIWYG). `None` reverts to the original image. A flip does not change the image size, only mirrors it.
+
+## v1.0.6 (2026-09-28)
 
 **Fixed**
 - Context menu duplication: the `getExtraMenuOptions` override previously returned `items.concat(base)`, concatenating the base menu list. On ComfyUI nightly/dev builds the base node no longer implements `getExtraMenuOptions` (its menu entries are provided by the Vue frontend), so the canvas' `options = extra.concat(options)` duplicated the base menu list, making the whole context menu appear twice. The override now returns only its own "Paste Image from Clipboard" entry, which is robust across all ComfyUI builds (stable and nightly, classic and Vue nodes).
