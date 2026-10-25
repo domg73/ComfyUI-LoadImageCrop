@@ -114,8 +114,8 @@ async function applyFlip(node, flip) {
     const img = await createImageBitmap(src);
     // Flip via canvas.
     const canvas = document.createElement("canvas");
-    canvas.width = flip === "Vertical" ? img.height : img.width;
-    canvas.height = flip === "Vertical" ? img.width : img.height;
+    canvas.width = img.width;
+    canvas.height = img.height;
     const cctx = canvas.getContext("2d");
     if (!cctx) throw new Error("no 2d context");
     if (flip === "Horizontal") {

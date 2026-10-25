@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.0.8 (2026-10-25)
+
+**Fixed**
+- **Vertical flip** changed the output shape (the flip canvas was created with swapped width/height, as if it were a rotation). A flip is only a mirror: the output now keeps the original dimensions for both the horizontal and the vertical flip.
+
 ## v1.0.7 (2026-09-29)
 
 **Added**
